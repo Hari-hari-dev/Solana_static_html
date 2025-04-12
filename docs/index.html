@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Solana Static dApp</title>
+  <!-- Include Solana web3.js via CDN -->
+  <script src="https://unpkg.com/@solana/web3.js@1.98.0/lib/index.iife.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 2em; }
+    button { margin: 0.5em 0; }
+    input { margin: 0.5em 0; }
+  </style>
+</head>
+<body>
+  <h1>Solana Static dApp</h1>
+  
+  <!-- Connect Wallet -->
+  <button id="connect-button">Connect Phantom Wallet</button>
+  <p id="wallet-address">Not connected</p>
+  
+  <!-- Register User Account -->
+  <button id="register-button" disabled>Register User Account</button>
+  
+  <!-- Submit Data -->
+  <div>
+    <input id="data-input" type="text" placeholder="Enter message" />
+    <button id="submit-button" disabled>Submit Message</button>
+  </div>
+  
+  <!-- Create ATA -->
+  <button id="create-ata-button" disabled>Create Token Account (ATA)</button>
+  
+  <!-- Display User Account Data -->
+  <p id="user-data">User account data not read yet.</p>
+  
+  <script>
+    // Replace with your program's public key (as a string)
+    const PROGRAM_ID = new solanaWeb3.PublicKey("YourProgramPublicKeyHere");
+    // Token mint address for the associated token account (replace if needed)
+    const TOKEN_MINT = new solanaWeb3.PublicKey("YourTokenMintAddressHere");
+    // Well-known Token Program ID and Associated Token Program ID
+    const TOKEN_PROGRAM_ID = new solanaWeb3.PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+    const ASSOCIATED_TOKEN_PROGRAM_ID = new solanaWeb3.PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+    
+    // Global variables
+    let provider = null;           // Phantom provider
+    let userPda = null;            // Derived PDA for the user account
+    let connection = null;         // Connection to Solana cluster
+
+    // Get references to DOM elements
+    const connectButton = document.getElementById('connect-button');
+    const walletAddressSpan = document.getElementById('wallet-address');
+    const registerBtn = document.getElementById('register-button');
+    const submitBtn = document.getElementById('submit-button');
+    const ataBtn = document.getElementById('create-ata-button');
+    const userDataP = document.getElementById('user-data');
+    const dataInput = document.getElementById('data-input');
+    
+    // Utility: Get Phantom provider, or redirect to Phantom download page.
+    const getPhantomProvider = () => {
+      if ('phantom' in window) {
+        const prov = window.phantom.solana;
+        if (prov?.isPhantom) return prov;
+      }
+      window.open('https://phantom.app/', '_blank');
+      return null;
+    };
+    
+    // Function to encode a JS string to the format expected by Anchor (4-byte little-endian length + UTF-8 bytes)
+    function encodeStringArgument(str) {
+      const encoder = new TextEncoder();
+      const utf8 = encoder.encode(str);
+      const len = utf8.length;
+      const lenBytes = new Uint8Array(4);
+      new DataView(lenBytes.buffer).setUint32(0, len, true);
+      const combined = new Uint8Array(4 + len);
+      combined.set(lenBytes, 0);
+      combined.set(utf8, 4);
+      return combined;
+    }
+    
+    // Connect wallet
+    connectButton.onclick = async () => {
+      provider = getPhantomProvider();
+      if (!provider) return;
+      
+      try {
+        const resp = await provider.connect();
+        const pubKey = resp.publicKey.toString();
+        walletAddressSpan.textContent = "Wallet: " + pubKey;
+        // Enable further actions now that the wallet is connected.
+        registerBtn.disabled = false;
+        submitBtn.disabled = false;
+        ataBtn.disabled = false;
+        // Create a connection (here using Devnet; change if needed)
+        connection = new solanaWeb3.Connection(
+          solanaWeb3.clusterApiUrl('devnet'),
+          'confirmed'
+        );
+        // Derive the user PDA using a seed ("user") and the user's public key.
+        const seed = "user";
+        const [pda, bump] = solanaWeb3.PublicKey.findProgramAddressSync(
+          [Buffer.from(seed), provider.publicKey.toBuffer()],
+          PROGRAM_ID
+        );
+        userPda = pda;
+        console.log("Derived User PDA:", userPda.toBase58(), "bump:", bump);
+      } catch (err) {
+        console.error("Wallet connection failed:", err);
+      }
+    };
+    
+    // Register user account by sending a register_user instruction.
+    registerBtn.onclick = async () => {
+      if (!provider.publicKey || !userPda) return;
+      // Instruction discriminator for "register_user" (example bytes, must match your program)
+      const registerDiscriminator = new Uint8Array([0x02, 0xf1, 0x96, 0xdf, 0x63, 0xd6, 0x74, 0x61]);
+      const registerIx = new solanaWeb3.TransactionInstruction({
+        programId: PROGRAM_ID,
+        keys: [
+          { pubkey: userPda, isSigner: false, isWritable: true },
+          { pubkey: provider.publicKey, isSigner: true, isWritable: true },
+          { pubkey: solanaWeb3.SystemProgram.programId, isSigner: false, isWritable: false },
+          // Optionally add SYSVAR_RENT_PUBKEY if your program requires it:
+          // { pubkey: solanaWeb3.SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },
+        ],
+        data: registerDiscriminator
+      });
+      
+      const transaction = new solanaWeb3.Transaction().add(registerIx);
+      transaction.feePayer = provider.publicKey;
+      transaction.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+      
+      try {
+        const { signature } = await provider.signAndSendTransaction(transaction);
+        console.log("Register transaction signature:", signature);
+        await connection.confirmTransaction(signature, 'confirmed');
+        alert("User registered! PDA: " + userPda.toBase58());
+      } catch (err) {
+        console.error("Register transaction failed:", err);
+      }
+    };
+    
+    // Submit data (string) to the program.
+    submitBtn.onclick = async () => {
+      const message = dataInput.value;
+      if (!provider.publicKey || !userPda || !message) return;
+      // Instruction discriminator for "submit_data" (example bytes; update to match your program)
+      const submitDiscriminator = new Uint8Array([0x14, 0x2e, 0xe3, 0x03, 0x83, 0x63, 0x41, 0x4d]);
+      const msgData = encodeStringArgument(message);
+      const submitData = new Uint8Array(submitDiscriminator.length + msgData.length);
+      submitData.set(submitDiscriminator);
+      submitData.set(msgData, submitDiscriminator.length);
+      
+      const submitIx = new solanaWeb3.TransactionInstruction({
+        programId: PROGRAM_ID,
+        keys: [
+          { pubkey: userPda, isSigner: false, isWritable: true },
+          { pubkey: provider.publicKey, isSigner: true, isWritable: false }
+        ],
+        data: submitData
+      });
+      
+      const transaction = new solanaWeb3.Transaction().add(submitIx);
+      transaction.feePayer = provider.publicKey;
+      transaction.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+      
+      try {
+        const { signature } = await provider.signAndSendTransaction(transaction);
+        console.log("Submit transaction signature:", signature);
+        await connection.confirmTransaction(signature, 'confirmed');
+        alert("Submitted data: " + message);
+      } catch (err) {
+        console.error("Submit transaction failed:", err);
+      }
+    };
+    
+    // Create an associated token account (ATA) for token collection.
+    ataBtn.onclick = async () => {
+      if (!provider.publicKey) return;
+      const [ataAddress] = solanaWeb3.PublicKey.findProgramAddressSync(
+        [
+          provider.publicKey.toBuffer(),
+          TOKEN_PROGRAM_ID.toBuffer(),
+          TOKEN_MINT.toBuffer()
+        ],
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      );
+      console.log("Derived ATA:", ataAddress.toBase58());
+      
+      const ataIx = new solanaWeb3.TransactionInstruction({
+        programId: ASSOCIATED_TOKEN_PROGRAM_ID,
+        keys: [
+          { pubkey: provider.publicKey, isSigner: true, isWritable: true },  // payer
+          { pubkey: ataAddress,      isSigner: false, isWritable: true },      // ATA to create
+          { pubkey: provider.publicKey, isSigner: false, isWritable: false },  // owner (wallet)
+          { pubkey: TOKEN_MINT,      isSigner: false, isWritable: false },      // token mint
+          { pubkey: solanaWeb3.SystemProgram.programId, isSigner: false, isWritable: false },
+          { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+          { pubkey: solanaWeb3.SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
+        ],
+        data: Buffer.alloc(0)
+      });
+      
+      const transaction = new solanaWeb3.Transaction().add(ataIx);
+      transaction.feePayer = provider.publicKey;
+      transaction.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+      
+      try {
+        const { signature } = await provider.signAndSendTransaction(transaction);
+        console.log("Create ATA signature:", signature);
+        await connection.confirmTransaction(signature, 'confirmed');
+        alert("Associated Token Account created: " + ataAddress.toBase58());
+      } catch (err) {
+        console.error("ATA creation failed:", err);
+      }
+    };
+    
+    // Read user data from the on-chain account and display it.
+    async function readUserData(userPda) {
+      const accountInfo = await connection.getAccountInfo(userPda);
+      if (!accountInfo) {
+        throw new Error("User account not found on-chain");
+      }
+      const data = accountInfo.data;
+      let offset = 8;  // Skip the first 8 bytes (discriminator)
+      const authorityBytes = data.slice(offset, offset + 32);
+      const authority = new solanaWeb3.PublicKey(authorityBytes).toBase58();
+      offset += 32;
+      const lenBytes = data.slice(offset, offset + 4);
+      const dataLength = new DataView(lenBytes.buffer, lenBytes.byteOffset, lenBytes.byteLength)
+        .getUint32(0, true);
+      offset += 4;
+      const stringBytes = data.slice(offset, offset + dataLength);
+      const userString = new TextDecoder().decode(stringBytes);
+      return { authority, data: userString };
+    }
+    
+    // Optionally, provide a way to read and display the stored user data.
+    // You could call this function after successful transactions or via a dedicated button.
+    async function fetchAndDisplayUserData() {
+      try {
+        if (!userPda) { 
+          userDataP.textContent = "User PDA not derived yet.";
+          return;
+        }
+        const userAccountData = await readUserData(userPda);
+        userDataP.textContent = "Stored Data: " + userAccountData.data + " (Authority: " + userAccountData.authority + ")";
+      } catch (err) {
+        console.error("Error reading user data:", err);
+        userDataP.textContent = "Error reading user data.";
+      }
+    }
+    
+    // For demonstration, call fetchAndDisplayUserData() after a delay
+    // so that you can see changes after interacting.
+    setInterval(() => {
+      if (connection && userPda) {
+        fetchAndDisplayUserData();
+      }
+    }, 10000);
+    
+  </script>
+</body>
+</html>
