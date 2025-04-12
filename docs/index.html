@@ -56,17 +56,20 @@
     const userDataP = document.getElementById('user-data');
     const dataInput = document.getElementById('data-input');
     
-    // Utility: Get Phantom provider, or redirect to Phantom download page.
+    // Utility: Get Phantom provider (using window.solana instead of window.phantom)
     const getPhantomProvider = () => {
-      if ('phantom' in window) {
-        const prov = window.phantom.solana;
-        if (prov?.isPhantom) return prov;
+      if ("solana" in window) {
+        const prov = window.solana;
+        if (prov && prov.isPhantom) {
+          return prov;
+        }
       }
-      window.open('https://phantom.app/', '_blank');
+      console.error("Phantom provider not found. Please install Phantom.");
+      window.open("https://phantom.app/", "_blank");
       return null;
     };
     
-    // Function to encode a JS string to the format expected by Anchor (4-byte little-endian length + UTF-8 bytes)
+    // Function to encode a JS string to the format expected (4-byte length + UTF-8)
     function encodeStringArgument(str) {
       const encoder = new TextEncoder();
       const utf8 = encoder.encode(str);
@@ -85,14 +88,17 @@
       if (!provider) return;
       
       try {
+        // Phantom's connect() might return the publicKey directly or an object, so log the response.
         const resp = await provider.connect();
-        const pubKey = resp.publicKey.toString();
+        const pubKey = provider.publicKey ? provider.publicKey.toString() : resp.publicKey.toString();
         walletAddressSpan.textContent = "Wallet: " + pubKey;
+        console.log("Connected to Phantom with publicKey:", pubKey);
+        
         // Enable further actions now that the wallet is connected.
         registerBtn.disabled = false;
         submitBtn.disabled = false;
         ataBtn.disabled = false;
-        // Create a connection (here using Devnet; change if needed)
+        // Create a connection (using Devnet; change if needed)
         connection = new solanaWeb3.Connection(
           solanaWeb3.clusterApiUrl('devnet'),
           'confirmed'
@@ -121,8 +127,6 @@
           { pubkey: userPda, isSigner: false, isWritable: true },
           { pubkey: provider.publicKey, isSigner: true, isWritable: true },
           { pubkey: solanaWeb3.SystemProgram.programId, isSigner: false, isWritable: false },
-          // Optionally add SYSVAR_RENT_PUBKEY if your program requires it:
-          // { pubkey: solanaWeb3.SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },
         ],
         data: registerDiscriminator
       });
@@ -191,10 +195,10 @@
       const ataIx = new solanaWeb3.TransactionInstruction({
         programId: ASSOCIATED_TOKEN_PROGRAM_ID,
         keys: [
-          { pubkey: provider.publicKey, isSigner: true, isWritable: true },  // payer
-          { pubkey: ataAddress,      isSigner: false, isWritable: true },      // ATA to create
-          { pubkey: provider.publicKey, isSigner: false, isWritable: false },  // owner (wallet)
-          { pubkey: TOKEN_MINT,      isSigner: false, isWritable: false },      // token mint
+          { pubkey: provider.publicKey, isSigner: true, isWritable: true },
+          { pubkey: ataAddress, isSigner: false, isWritable: true },
+          { pubkey: provider.publicKey, isSigner: false, isWritable: false },
+          { pubkey: TOKEN_MINT, isSigner: false, isWritable: false },
           { pubkey: solanaWeb3.SystemProgram.programId, isSigner: false, isWritable: false },
           { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
           { pubkey: solanaWeb3.SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }
@@ -223,7 +227,7 @@
         throw new Error("User account not found on-chain");
       }
       const data = accountInfo.data;
-      let offset = 8;  // Skip the first 8 bytes (discriminator)
+      let offset = 8;  // Skip discriminator
       const authorityBytes = data.slice(offset, offset + 32);
       const authority = new solanaWeb3.PublicKey(authorityBytes).toBase58();
       offset += 32;
@@ -236,8 +240,7 @@
       return { authority, data: userString };
     }
     
-    // Optionally, provide a way to read and display the stored user data.
-    // You could call this function after successful transactions or via a dedicated button.
+    // Optionally, periodically fetch and display user data.
     async function fetchAndDisplayUserData() {
       try {
         if (!userPda) { 
@@ -252,8 +255,6 @@
       }
     }
     
-    // For demonstration, call fetchAndDisplayUserData() after a delay
-    // so that you can see changes after interacting.
     setInterval(() => {
       if (connection && userPda) {
         fetchAndDisplayUserData();
